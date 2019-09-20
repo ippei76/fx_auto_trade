@@ -1,0 +1,4 @@
+*.class
+*.csv
+*.ex4
+mnist/

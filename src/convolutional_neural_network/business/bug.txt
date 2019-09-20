@@ -1,0 +1,56 @@
+単体テストではmnistを取り扱ったがmnistはsvChannelNums = 1である。よって、svChannelNums >=2のときのテストを後に実施するべし
+  → 実施済み
+
+batchNormalizationで分散を求めるときに、sumVar += sumMeanとしていた。
+　→ 1回あたりの平均値をtmpとして、sumVar += tmp に変更。さらに、cnnだけでなくMlpにも適用
+    → var2を求めるときに、桁落ちが発生してマイナスになる問題が発生。
+　　　→ commonFuncにfloatSubtractionを導入して、100000かけて有効桁を保証する。
+        → 上記の方法では、引き算の数値が1>のときに桁溢れをおこしておかしくなる。
+　　　　　→ 分子の有理に変更した。(http://blog.goo.ne.jp/gakyo/e/c031cb39848bcdbb58b15861cf538271)
+　　　　　　→ var2が0になる場合(sv,w=1)でテストして、問題なく0（マイナスにならない)であることを確認した。
+
+cnnPからmlpWbを求めるときに、inputChannelがp_x,p_yがうまく反映されていなかった。
+　→ かけあわせのときに、x,yのfor文を追加し、getDMlpWはgetDim3Idx(x,y,inputIdx,xNums,yNums)でinputChannelを参照するようにして解決。
+  　→ backCnnPMlpWにおけるmlpWの参照でも同様のバグが発生していた。
+  　  → 上記と同様にgetDim3Idxでp_x,yを参照して解決
+　→ mlpWの参照にcnnLastLayerが指定されていた。おそらく改修中に誤って記載したと思われ、mlpMultiplyでは問題なくmlpLayerIsZeroが参照されていた。
+  　→ mlpLayerIsZeroに修正した。
+ 
+backCnnConvolutionにおいて、del2,del3の値が正しいことは検証していない。
+backMlpMultiplyと見比べて,m*x*yであることを目視で確認しただけ。今後挙動がおかしければ疑う必要あり。     
+
+結合した結果、step2で落ちた。mlpBackMultiplyでシェアードメモリを使用しているが、確保サイズ以上の領域にアクセスしていたことが原因
+（確保サイズはminiBatchNums分にもかかわらず、getDim2Idx(miniBatchIdx,outputIdx)で多くアクセスしていた）
+　→ miniBatchIdxだけのアクセスにしたことで解消。また、シェアードメモリを使用している箇所で同様のbugがないことを確認した。　
+
+
+JNA解放の際に自動でfreeがかかるがエラーで落ちる。
+　→ コメントアウトしながら原因の箇所を特定し、resultの領域がおかしかった。Constants.javaでは、miniBatchのサイズが考慮されていなかったため、これを修正し、バグ除去完了
+
+為替トレーニングを実施したところ、数STEPでnanが検出される。調査した結果、mlp,cnnBatchNormalizationで分散がマイナスになっていた。
+マイナスになる原因は誤差によるもので、miniBatchNumsの数が小さい程発生しやすい。
+　→ 計算コストが小さい分散算出では誤差が大きいため、元の計算コストが高い分散算出方法（sum[(wb-mean)^2]/miniBatchNums]に戻した。
+    また、wb-meanのときには、floatSubtractionを使用する。また、sumVar2 += tmpではなく、sumVar2 = tmp + sumVar2に変更した（誤差を小さくする効果があるかもしれないが、やはり誤差は存在している）
+　　→ 結果、nanによるエラーが発生しなくなった。
+
+6/25にsvの入れ替え、syncDeviceの順序変更、平均の効率化の改修を実施したら、MNISTでうまく学習できない問題が発生した。
+　→ deviceSyncのタイミングが悪い可能性があり、更新処理のまわりで同期するように変更したが、改善しなかった。
+    → meanFlgがvar2のときに1になっていないことが原因だった。これを直して問題なく完了した。
+
+backCnnConvolutionのdel2,3Tmpを求めるときに、平均の時のように求めるようにした。
+　→ 平均を求める要素数が大きいと誤差が大きく発生する。
+　　→ ここは結局ほぼ0でpropされるところであるためほっといて様子をみる。もしかした、上記のmean,var2でも誤差が発生しているのかもしれない。
+      → nanエラーが発生する。原因は不明
+        → 翌日nanエラーを再現できなくなった。一旦放置
+　　　→ Average関数で最後にthreadNumsで割っていたが、単純にSum関数に名前を変更し、threadNumsで割ることをやめた。(呼び出し元の関数でthreadNumsでわることにした)
+　　　　→ 誤差がでなくなった???
+
+出力nanが発生した。
+  → mlpActivateのmaxMlpBnを求めるときにおいて、targetMlpBnとmaxMlpBnの大小比較で"="の場合が考慮されていなかった。
+    → 大小比較の一方に"="を書き加え、さらにバグではないが、"for(i=0;"を"for(i=1;"に変更して最初のmaxMlpBnをoutputIdx=0で求めた結果と重複しないようにした。
+
+infNanCheckでnan errorが発生した。
+　→ 調査の結果、Eの値に対するcheck時に発生している。logf(result)でnanが発生していることがわかった。
+　　→ 学習により適応すると、resultが0となることがある。
+　　　→ result > 0 を満たさないときは、logf(result + getBnEps())とする。
+        → バグ解消

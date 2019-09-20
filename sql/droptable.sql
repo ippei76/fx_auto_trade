@@ -1,0 +1,6 @@
+drop table EURUSD_RATE_W_RAW_5MIN;
+drop table EURUSD_RATE_RAW_5MIN;
+drop table EURUSD_RATE_W_RAW_10MIN;
+drop table EURUSD_RATE_RAW_10MIN;
+drop table EURUSD_RATE_W_RAW_60MIN;
+drop table EURUSD_RATE_RAW_60MIN;
